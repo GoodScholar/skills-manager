@@ -42,7 +42,16 @@ fn sync_active_scenario_to_tool(store: &SkillStore, tool_key: &str) {
 fn unsync_all_for_tool(store: &SkillStore, tool_key: &str) {
     let targets = store.get_all_targets().unwrap_or_default();
     for target in targets.iter().filter(|t| t.tool == tool_key) {
-        sync_engine::remove_target(&PathBuf::from(&target.target_path)).ok();
+        match sync_engine::remove_recorded_target(&PathBuf::from(&target.target_path), &target.mode)
+        {
+            Ok(true) => {}
+            Ok(false) => log::warn!(
+                "Preserving {}: no longer matches its recorded {} deployment",
+                target.target_path,
+                target.mode
+            ),
+            Err(e) => log::warn!("Failed to remove sync target {}: {e}", target.target_path),
+        }
         store.delete_target(&target.skill_id, tool_key).ok();
     }
 }
@@ -424,11 +433,7 @@ pub async fn remove_custom_tool(
     let store = store.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         // Remove synced targets for this tool
-        let targets = store.get_all_targets().unwrap_or_default();
-        for target in targets.iter().filter(|t| t.tool == key) {
-            crate::core::sync_engine::remove_target(&PathBuf::from(&target.target_path)).ok();
-            store.delete_target(&target.skill_id, &key).ok();
-        }
+        unsync_all_for_tool(&store, &key);
         // Remove from custom_tools list
         let mut customs = get_custom_tools(&store);
         customs.retain(|c| c.key != key);
@@ -452,7 +457,7 @@ pub fn migrate_legacy_tool_keys(store: &SkillStore) -> Result<(), AppError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::skill_store::{ScenarioRecord, SkillRecord};
+    use crate::core::skill_store::{ScenarioRecord, SkillRecord, SkillTargetRecord};
     use std::fs;
     use tempfile::tempdir;
 
@@ -475,6 +480,42 @@ mod tests {
             .set_setting("custom_tools", &serde_json::to_string(&customs).unwrap())
             .unwrap();
         store
+    }
+
+    #[test]
+    fn disabling_tool_preserves_directory_that_replaced_its_link() {
+        let tmp = tempdir().unwrap();
+        let store = store_with_colliding_custom_tool(tmp.path(), "my_own_agent");
+        let central = tmp.path().join("central/skill-one");
+        fs::create_dir_all(&central).unwrap();
+        store
+            .insert_skill(&sample_skill("skill-1", "skill-one", &central))
+            .unwrap();
+
+        let target = tmp.path().join("agent-skills/skill-one");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("mine.txt"), "user content").unwrap();
+        store
+            .insert_target(&SkillTargetRecord {
+                id: "target-1".to_string(),
+                skill_id: "skill-1".to_string(),
+                tool: "my_own_agent".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                mode: "symlink".to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(1),
+                last_error: None,
+                source_hash: None,
+            })
+            .unwrap();
+
+        set_tool_enabled_internal(&store, "my_own_agent", false).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("mine.txt")).unwrap(),
+            "user content"
+        );
+        assert!(store.get_all_targets().unwrap().is_empty());
     }
 
     #[test]

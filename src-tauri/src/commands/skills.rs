@@ -762,7 +762,18 @@ pub fn delete_managed_skills_by_ids(
             let targets = store.get_targets_for_skill(skill_id)?;
             for target in &targets {
                 let target_path = PathBuf::from(&target.target_path);
-                sync_engine::remove_target(&target_path).ok();
+                match sync_engine::remove_recorded_target(&target_path, &target.mode) {
+                    Ok(true) => {}
+                    Ok(false) => log::warn!(
+                        "Preserving {}: no longer matches its recorded {} deployment",
+                        target_path.display(),
+                        target.mode
+                    ),
+                    Err(e) => log::warn!(
+                        "Failed to remove sync target {}: {e}",
+                        target_path.display()
+                    ),
+                }
             }
 
             let central = PathBuf::from(&skill.central_path);
@@ -3307,7 +3318,7 @@ mod tests {
                 skill_id: "skill-1".to_string(),
                 tool: "cursor".to_string(),
                 target_path: target_dir.to_string_lossy().to_string(),
-                mode: "symlink".to_string(),
+                mode: "copy".to_string(),
                 status: "ok".to_string(),
                 synced_at: Some(1),
                 last_error: None,
@@ -3342,6 +3353,40 @@ mod tests {
         assert!(sync_metadata::metadata_dir()
             .join("skills/skill-2.json")
             .exists());
+    }
+
+    #[test]
+    fn deleting_managed_skill_preserves_directory_that_replaced_its_link() {
+        let repo = test_repo();
+        let central = write_skill_dir("skill-one");
+        repo.store
+            .insert_skill(&sample_skill("skill-1", "skill-one", &central))
+            .unwrap();
+
+        let target = repo._tmp.path().join("agent-skills/skill-one");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("mine.txt"), "user content").unwrap();
+        repo.store
+            .insert_target(&SkillTargetRecord {
+                id: "target-1".to_string(),
+                skill_id: "skill-1".to_string(),
+                tool: "codex".to_string(),
+                target_path: target.to_string_lossy().to_string(),
+                mode: "symlink".to_string(),
+                status: "ok".to_string(),
+                synced_at: Some(1),
+                last_error: None,
+                source_hash: None,
+            })
+            .unwrap();
+
+        delete_managed_skills_by_ids(&repo.store, &["skill-1".to_string()]).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(target.join("mine.txt")).unwrap(),
+            "user content"
+        );
+        assert!(repo.store.get_all_targets().unwrap().is_empty());
     }
 
     /// The whole point of the preflight: it must see the user's file in the

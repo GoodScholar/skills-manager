@@ -315,7 +315,19 @@ pub async fn set_skill_tool_toggle(
                     .map_err(AppError::db)?;
                 if let Some(target) = targets.iter().find(|target| target.tool == tool) {
                     // Safe because the app currently guarantees a single active scenario.
-                    sync_engine::remove_target(&PathBuf::from(&target.target_path)).ok();
+                    let target_path = PathBuf::from(&target.target_path);
+                    match sync_engine::remove_recorded_target(&target_path, &target.mode) {
+                        Ok(true) => {}
+                        Ok(false) => log::warn!(
+                            "Preserving {}: no longer matches its recorded {} deployment",
+                            target_path.display(),
+                            target.mode
+                        ),
+                        Err(e) => log::warn!(
+                            "Failed to remove sync target {}: {e}",
+                            target_path.display()
+                        ),
+                    }
                 }
                 store
                     .delete_target(&skill_id, &tool)
