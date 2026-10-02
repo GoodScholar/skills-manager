@@ -52,37 +52,13 @@ pub struct ProjectAgentTargetDto {
 }
 
 fn agent_skill_configs(store: &SkillStore) -> Vec<project_scanner::AgentSkillConfig> {
-    let mut grouped: Vec<(String, Vec<(String, String)>)> = Vec::new();
-    for adapter in tool_adapters::all_tool_adapters(store) {
-        let project_dir = adapter.project_relative_skills_dir().to_string();
-        if project_dir.is_empty() {
-            continue;
-        }
-        if let Some((_, agents)) = grouped.iter_mut().find(|(dir, _)| *dir == project_dir) {
-            agents.push((adapter.key, adapter.display_name));
-        } else {
-            grouped.push((project_dir, vec![(adapter.key, adapter.display_name)]));
-        }
-    }
-
-    grouped
+    tool_adapters::all_tool_adapters(store)
         .into_iter()
-        .filter_map(|(relative_skills_dir, agents)| {
-            let (key, first_display_name) = agents.first()?.clone();
-            let display_name = if agents.len() == 1 {
-                first_display_name
-            } else {
-                agents
-                    .into_iter()
-                    .map(|(_, display_name)| display_name)
-                    .collect::<Vec<_>>()
-                    .join(" / ")
-            };
-            Some(project_scanner::AgentSkillConfig {
-                key,
-                display_name,
-                relative_skills_dir,
-            })
+        .filter(|adapter| !adapter.project_relative_skills_dir().is_empty())
+        .map(|adapter| project_scanner::AgentSkillConfig {
+            relative_skills_dir: adapter.project_relative_skills_dir().to_string(),
+            key: adapter.key,
+            display_name: adapter.display_name,
         })
         .collect()
 }
@@ -163,8 +139,6 @@ fn project_agent_targets_for_record(
         .into_iter()
         .collect();
 
-    // Scanning groups shared directories, but export selection needs each
-    // agent's own identity and enabled state, including custom agents (#431).
     tool_adapters::all_tool_adapters(store)
         .into_iter()
         .filter(|adapter| !adapter.project_relative_skills_dir().is_empty())
@@ -1269,7 +1243,8 @@ mod tests {
     use super::{
         agent_skill_configs, classify_sync_status, ensure_distinct_linked_workspace_roots,
         find_best_center_match, project_agent_targets_for_record, project_to_dto,
-        remove_workspace_skill_target, resolve_agent_skills_roots, set_project_skill_enabled_state,
+        read_workspace_skills, remove_workspace_skill_target, resolve_agent_skills_roots,
+        set_project_skill_enabled_state,
     };
     use crate::core::content_hash;
     use crate::core::error::ErrorKind;
@@ -1334,7 +1309,59 @@ mod tests {
                 .iter()
                 .filter(|config| config.relative_skills_dir == ".claude/skills")
                 .count(),
-            1
+            2
+        );
+    }
+
+    #[test]
+    fn project_scan_assigns_shared_directory_skills_to_each_agent() {
+        let tmp = tempdir().unwrap();
+        let store = SkillStore::new(&tmp.path().join("store.db")).unwrap();
+        crate::core::tool_service::set_custom_tools(
+            &store,
+            &[CustomToolDef {
+                key: "custom_agent".to_string(),
+                display_name: "Custom Agent".to_string(),
+                skills_dir: tmp
+                    .path()
+                    .join("global-skills")
+                    .to_string_lossy()
+                    .to_string(),
+                project_relative_skills_dir: Some(".claude/skills".to_string()),
+                category: ToolCategory::Coding,
+            }],
+        )
+        .unwrap();
+        let project_path = tmp.path().join("project");
+        let skill_path = project_path
+            .join(".claude")
+            .join("skills")
+            .join("shared-skill");
+        fs::create_dir_all(&skill_path).unwrap();
+        fs::write(skill_path.join("SKILL.md"), "# Shared Skill").unwrap();
+        let record = ProjectRecord {
+            id: "project-1".to_string(),
+            name: "Project".to_string(),
+            path: project_path.to_string_lossy().to_string(),
+            workspace_type: "project".to_string(),
+            linked_agent_key: None,
+            linked_agent_name: None,
+            disabled_path: None,
+            sort_order: 0,
+            created_at: 0,
+            updated_at: 0,
+        };
+
+        let mut assigned_agents = read_workspace_skills(&record, &agent_skill_configs(&store))
+            .into_iter()
+            .filter(|skill| skill.relative_path == "shared-skill")
+            .map(|skill| skill.agent)
+            .collect::<Vec<_>>();
+        assigned_agents.sort();
+
+        assert_eq!(
+            assigned_agents,
+            vec!["claude_code".to_string(), "custom_agent".to_string()]
         );
     }
 
