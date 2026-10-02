@@ -12,7 +12,7 @@ export function useSkillViewMode() {
     } catch {
       // Keep the view usable when browser storage is unavailable.
     }
-    return "list";
+    return "grid";
   });
 
   const setViewMode = useCallback((next: SkillViewMode) => {
