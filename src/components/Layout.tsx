@@ -9,21 +9,13 @@ import { useDragWindow } from "../hooks/useDragWindow";
 
 export function Layout() {
   const { t } = useTranslation();
-  const { appError, refreshAppData, closeSkillDetail } = useApp();
+  const { appError, refreshAppData } = useApp();
   const onDrag = useDragWindow();
   const navigate = useNavigate();
 
-  // App navigation and refresh shortcuts
+  // Cmd+, to open Settings
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === "n") {
-        const target = e.target as HTMLElement;
-        if (e.defaultPrevented || e.isComposing || e.repeat) return;
-        if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
-        e.preventDefault();
-        closeSkillDetail();
-        navigate("/install");
-      }
       if ((e.metaKey || e.ctrlKey) && e.key === ",") {
         const target = e.target as HTMLElement;
         if (target.tagName === "INPUT" || target.tagName === "TEXTAREA" || target.isContentEditable) return;
@@ -39,7 +31,7 @@ export function Layout() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [navigate, refreshAppData, closeSkillDetail]);
+  }, [navigate, refreshAppData]);
 
   return (
     <div className="relative flex h-full w-full overflow-hidden bg-background text-primary">
